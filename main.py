@@ -30,15 +30,18 @@ import torch.multiprocessing as mp
 import torch.utils.data
 
 try:
-    from apex.parallel import DistributedDataParallel as DDP
-    from apex import amp
+    # from apex.parallel import DistributedDataParallel as DDP
+    # from apex import amp
+    pass
 except ImportError:
-    raise ImportError(
-        'Please install apex from https://www.github.com/nvidia/apex.'
-    )
+    pass
+    # raise ImportError(
+    #     'Please install apex from https://www.github.com/nvidia/apex.'
+    # )
 
 try:
-    from warpctc_pytorch import CTCLoss
+    from torch.nn import CTCLoss
+    # from warpctc_pytorch import CTCLoss
 except ImportError:
     raise ImportError(
         'Please install warpctc from https://github.com/SeanNaren/warp-ctc.'
@@ -123,9 +126,10 @@ def main():
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable multiprocessing distributed training.')
     elif ngpus_per_node <= 1:
-        raise EnvironmentError(
-            'No enough GPUs for multiprocessing distributed training.'
-        )
+        args.multiprocessing_distributed = False
+        # raise EnvironmentError(
+        #     'No enough GPUs for multiprocessing distributed training.'
+        # )
     else:
         args.multiprocessing_distributed = True
 
@@ -160,10 +164,13 @@ def main_worker(gpu, ngpus_per_node, args):
     args.PAD          = model.PAD
     print(model)
 
+    device = torch.device('cuda:' + str(args.gpu) if args.gpu is not None and torch.cuda.is_available() else ('cuda' if torch.cuda.is_available() else 'cpu'))
+    args.device = device
+
     # criterion
     if args.pred == 'CTC':
         codec = ctc_codec(characters)
-        criterion = CTCLoss().cuda(args.gpu)
+        criterion = CTCLoss(zero_infinity=True).to(device)
     else:
         raise ValueError('not expected prediction.')
 
@@ -191,23 +198,18 @@ def main_worker(gpu, ngpus_per_node, args):
         print('GPU: {} initialized done.'.format(args.gpu))
         torch.cuda.set_device(args.gpu)
         model.cuda(args.gpu)
-        # Initialize Amp.
-        model, optimizer = amp.initialize(model, optimizer,
-                                          opt_level='O2',
-                                          keep_batchnorm_fp32=True,
-                                          loss_scale=1.0)
+        # Initialize Amp. (Removed)
+        # model, optimizer = amp.initialize(model, optimizer, ...)
+        
         args.batch_size = int(args.batch_size / ngpus_per_node)
         args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-        #model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model = DDP(model, delay_allreduce=True) # apex
-    else: # Single-GPU
-        torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
-        # Initialize Amp.
-        model, optimizer = amp.initialize(model, optimizer,
-                                          opt_level='O2',
-                                          keep_batchnorm_fp32=True,
-                                          loss_scale=1.0)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+    else: # Single-GPU/CPU
+        if torch.cuda.is_available() and args.gpu is not None:
+            torch.cuda.set_device(args.gpu)
+        model = model.to(device)
+        # Initialize Amp. (Removed)
+        # model, optimizer = amp.initialize(model, optimizer, ...)
 
     #######################################################################
     # optionally resume from a checkpoint
@@ -215,7 +217,7 @@ def main_worker(gpu, ngpus_per_node, args):
         if os.path.isfile(args.resume):
             print('=> loading checkpoint: {}'.format(args.resume))
             checkpoint = torch.load(
-                args.resume, map_location='cuda:' + str(args.gpu)
+                args.resume, map_location=args.device
             )
             args.start_epoch = checkpoint['epoch']
             best_acc = checkpoint['best_acc']
@@ -326,11 +328,11 @@ def train(train_loader, val_loader, model, criterion, optimizer,
         # measure data loading time
         data_time.update(time.time() - end)
 
-        input = input.cuda(args.gpu, non_blocking=True)
+        input = input.to(args.device, non_blocking=True)
         target_indexs, target_length = codec.encode(target)
         preds = model(input) # preds: WBD
         preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size)
-        loss = criterion(preds,
+        loss = criterion(preds.log_softmax(2),
                          torch.from_numpy(target_indexs),
                          preds_sizes,
                          torch.from_numpy(target_length))
@@ -342,9 +344,9 @@ def train(train_loader, val_loader, model, criterion, optimizer,
 
         # compute gradient and do optimization step
         optimizer.zero_grad()
-        #loss.backward()
-        with amp.scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward()
+        loss.backward()
+        # with amp.scale_loss(loss, optimizer) as scaled_loss:
+        #     scaled_loss.backward()
         optimizer.step()
 
         # measure elapsed time
@@ -400,7 +402,7 @@ def test(data_loader, model, args):
             # measure data loading time
             data_time.update(time.time() - end)
 
-            input = input.cuda(args.gpu, non_blocking=True)
+            input = input.to(args.device, non_blocking=True)
             preds = model(input)
             result = codec.decode(preds.cpu().detach().numpy())
 
@@ -506,7 +508,11 @@ def get_model_info(args):
             'Model type: {} not supported'.format(args.model_type)
         )
 
-    chars_list_file = os.path.join(args.data + 'chars_list.txt')
+    chars_list_file = os.path.join(args.data, 'chars_list.txt')
+    if not os.path.isfile(chars_list_file):
+        # Fallback to handwritten_ctr_data if not found in data dir
+        chars_list_file = os.path.join(os.path.dirname(args.data.rstrip('/')), 'handwritten_ctr_data', 'chars_list.txt')
+    
     with open(chars_list_file, 'r') as f:
         for line in f.readlines():
             line = line.strip('\n')

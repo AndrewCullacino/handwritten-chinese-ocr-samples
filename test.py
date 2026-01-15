@@ -310,8 +310,10 @@ def get_model_info(model_type):
     chars_list_file = ''
     if model_type == 'hctr':
         model = hctr_model()
-        chars_list_file = \
-            './data/handwritten_ctr_data/chars_list.txt'
+        chars_list_file = './data/handwritten_ctr_data/chars_list.txt'
+        if not os.path.isfile(chars_list_file):
+             # Fallback to data/chars_list.txt or similar if needed
+             chars_list_file = './data/demo_data/chars_list.txt'
     else:
         raise ValueError(
             'Model type: {} not supported'.format(model_type)
