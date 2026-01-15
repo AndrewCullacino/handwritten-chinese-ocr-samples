@@ -119,37 +119,35 @@ class ResNet(nn.Module):
         x = self.conv0_2(x)
         x = self.bn0_2(x)
         x = self.relu(x)
-        x = self.maxpool(x)  # 1st: height/2, width/2
+        # Use (2,1) pooling throughout: reduce height only, preserve full width for CTC
+        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/2, width unchanged
 
         x = self.block1(x)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)  # 2nd: height/4, width/4
+        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/4, width unchanged
         x = self.dropout1(x)
 
         x = self.block2(x)
         x = self.conv2(x)
         x = self.bn2(x)
         x = self.relu(x)
-        # Use (2,1) pooling: reduce height but preserve width for CTC
-        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/8, width/4
+        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/8, width unchanged
         x = self.dropout2(x)
 
         x = self.block3(x)
         x = self.conv3(x)
         x = self.bn3(x)
         x = self.relu(x)
-        # Use (2,1) pooling: reduce height but preserve width for CTC
-        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/16, width/4
+        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/16, width unchanged
         x = self.dropout3(x)
 
         x = self.block4(x)
         x = self.conv4(x)
         x = self.bn4(x)
         x = self.relu(x)
-        # Use (2,1) pooling: reduce height but preserve width for CTC
-        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/32, width/4
+        x = nn.functional.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))  # height/32, width unchanged
         x = self.dropout4(x)
 
         return x
