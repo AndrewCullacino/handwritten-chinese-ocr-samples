@@ -121,7 +121,7 @@ def test(args):
         print('Use GPU: {} for testing'.format(args.gpu))
 
     # create model specific info
-    model, img_height, characters = get_model_info(args.model_type)
+    model, img_height, characters = get_model_info(args.model_type, args.input)
     # depends on using ctc or attension
     codec = ctc_codec(characters)
     if args.decode_method == 'beam-search':
@@ -303,26 +303,40 @@ def benchmark(model, codec, args):
     return CER
 
 
-def get_model_info(model_type):
+def get_model_info(model_type, input_path=None):
     '''Get specific model information: model, characters'''
     model = None
     characters = ''
     chars_list_file = ''
-    if model_type == 'hctr':
-        model = hctr_model()
+    
+    # Try to find chars_list.txt based on input path or default locations
+    if input_path:
+        # If input is like data/hwdb2.0/test, look for chars_list.txt in parent
+        parent_dir = os.path.dirname(input_path.rstrip('/'))
+        chars_list_file = os.path.join(parent_dir, 'chars_list.txt')
+    
+    if not chars_list_file or not os.path.isfile(chars_list_file):
         chars_list_file = './data/handwritten_ctr_data/chars_list.txt'
-        if not os.path.isfile(chars_list_file):
-             # Fallback to data/chars_list.txt or similar if needed
-             chars_list_file = './data/demo_data/chars_list.txt'
-    else:
-        raise ValueError(
-            'Model type: {} not supported'.format(model_type)
-        )
-
+    if not os.path.isfile(chars_list_file):
+        chars_list_file = './data/hwdb2.0/chars_list.txt'
+    if not os.path.isfile(chars_list_file):
+        chars_list_file = './data/demo_data/chars_list.txt'
+    
     with open(chars_list_file, 'r') as f:
         for line in f.readlines():
             line = line.strip('\n')
             characters += line
+    
+    # num_classes = 1 (blank) + num_characters + 1 (unknown)
+    num_classes = 1 + len(characters) + 1
+    print(f"Character vocabulary: {len(characters)}, Model output classes: {num_classes}")
+    
+    if model_type == 'hctr':
+        model = hctr_model(num_classes=num_classes)
+    else:
+        raise ValueError(
+            'Model type: {} not supported'.format(model_type)
+        )
 
     return model, model.img_height, characters
 

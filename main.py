@@ -501,13 +501,8 @@ def get_model_info(args):
     model = None
     characters = ''
     chars_list_file = ''
-    if args.model_type == 'hctr':
-        model = hctr_model()
-    else:
-        raise ValueError(
-            'Model type: {} not supported'.format(args.model_type)
-        )
-
+    
+    # Load characters first to determine num_classes
     chars_list_file = os.path.join(args.data, 'chars_list.txt')
     if not os.path.isfile(chars_list_file):
         # Fallback to handwritten_ctr_data if not found in data dir
@@ -517,6 +512,17 @@ def get_model_info(args):
         for line in f.readlines():
             line = line.strip('\n')
             characters += line
+    
+    # num_classes = 1 (blank) + num_characters + 1 (unknown)
+    num_classes = 1 + len(characters) + 1
+    print(f"Character vocabulary: {len(characters)}, Model output classes: {num_classes}")
+    
+    if args.model_type == 'hctr':
+        model = hctr_model(num_classes=num_classes)
+    else:
+        raise ValueError(
+            'Model type: {} not supported'.format(args.model_type)
+        )
 
     return model, characters
 

@@ -153,13 +153,14 @@ class ResNet(nn.Module):
 
 
 class hctr_model(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=7375):
         super(hctr_model, self).__init__()
         self.img_height = 128
         self.PAD = 'NormalizePAD'
         self.optimizer = 'SGD'
         self.pred = 'CTC'
-        self.noutput = 1 + 7373 + 1 # 'blank' of CTC + num of characters + 'unknown'
+        # num_classes = 1 (blank) + num_characters + 1 (unknown)
+        self.noutput = num_classes
 
         self.cnn = ResNet(1, 512, BasicBlock, [2, 4, 5, 1])
         self.linear = nn.Linear(2048, self.noutput)
