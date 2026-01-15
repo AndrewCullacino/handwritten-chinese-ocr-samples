@@ -162,8 +162,11 @@ class hctr_model(nn.Module):
         # num_classes = 1 (blank) + num_characters + 1 (unknown)
         self.noutput = num_classes
 
-        self.cnn = ResNet(1, 512, BasicBlock, [2, 4, 5, 1])
-        self.linear = nn.Linear(2048, self.noutput)
+        # Use only 4 maxpool instead of 5 to preserve more width for CTC
+        # This gives output_width = input_width / 16 instead of / 32
+        self.cnn = ResNet_CTC(1, 512, BasicBlock, [2, 4, 5, 1])
+        # After 4 maxpool: height 128 -> 8, so channels = 512 * 8 = 4096
+        self.linear = nn.Linear(4096, self.noutput)
 
     def forward(self, input):
         x = self.cnn(input)
@@ -171,5 +174,98 @@ class hctr_model(nn.Module):
         x = x.permute(0, 2, 1) # BDL -> BLD
         x = self.linear(x)
         x = x.permute(1, 0, 2) # BLD -> LBD
+
+        return x
+
+
+class ResNet_CTC(nn.Module):
+    """ResNet variant with only 4 maxpool layers to preserve sequence length for CTC"""
+    def __init__(self, in_channel, out_channel, block, num_blocks):
+        super(ResNet_CTC, self).__init__()
+        inout_channels = [int(out_channel / 8), # 64
+                          int(out_channel / 4), #128
+                          int(out_channel / 2), #256
+                          int(out_channel / 1), #512
+                          out_channel]          #512
+        self.inplanes = int(out_channel / 8) #64
+
+        self.conv0_1 = nn.Conv2d(in_channel, inout_channels[0], 3, 1, 1)
+        self.bn0_1 = nn.BatchNorm2d(inout_channels[0])
+        self.conv0_2 = nn.Conv2d(inout_channels[0], self.inplanes, 3, 1, 1)
+        self.bn0_2 = nn.BatchNorm2d(self.inplanes)
+
+        self.block1 = self._make_block(block, inout_channels[1], num_blocks[0])
+        self.conv1 = nn.Conv2d(inout_channels[1], inout_channels[1], 3, 1, 1)
+        self.bn1 = nn.BatchNorm2d(inout_channels[1])
+
+        self.block2 = self._make_block(block, inout_channels[2], num_blocks[1])
+        self.conv2 = nn.Conv2d(inout_channels[2], inout_channels[2], 3, 1, 1)
+        self.bn2 = nn.BatchNorm2d(inout_channels[2])
+
+        self.block3 = self._make_block(block, inout_channels[3], num_blocks[2])
+        self.conv3 = nn.Conv2d(inout_channels[3], inout_channels[3], 3, 1, 1)
+        self.bn3 = nn.BatchNorm2d(inout_channels[3])
+
+        self.block4 = self._make_block(block, inout_channels[4], num_blocks[3])
+        self.conv4 = nn.Conv2d(inout_channels[4], inout_channels[4], 3, 1, 1)
+        self.bn4 = nn.BatchNorm2d(inout_channels[4])
+
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(2, 2)
+        self.dropout1 = nn.Dropout(0.3)
+        self.dropout2 = nn.Dropout(0.3)
+        self.dropout3 = nn.Dropout(0.3)
+        self.dropout4 = nn.Dropout(0.9)
+
+    def _make_block(self, block, planes, num_blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion))
+        blocks = []
+        blocks.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, num_blocks):
+            blocks.append(block(self.inplanes, planes))
+        return nn.Sequential(*blocks)
+
+    def forward(self, x):
+        x = self.conv0_1(x)
+        x = self.bn0_1(x)
+        x = self.relu(x)
+        x = self.conv0_2(x)
+        x = self.bn0_2(x)
+        x = self.relu(x)
+        x = self.maxpool(x)  # 1st maxpool: /2
+
+        x = self.block1(x)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)  # 2nd maxpool: /4
+        x = self.dropout1(x)
+
+        x = self.block2(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.maxpool(x)  # 3rd maxpool: /8
+        x = self.dropout2(x)
+
+        x = self.block3(x)
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = self.relu(x)
+        x = self.maxpool(x)  # 4th maxpool: /16 (REMOVED 5th to preserve width!)
+        x = self.dropout3(x)
+
+        x = self.block4(x)
+        x = self.conv4(x)
+        x = self.bn4(x)
+        x = self.relu(x)
+        # NO 5th maxpool - keep more timesteps for CTC
+        x = self.dropout4(x)
 
         return x
