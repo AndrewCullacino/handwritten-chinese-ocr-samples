@@ -326,6 +326,11 @@ def train(train_loader, val_loader, model, criterion, optimizer,
         data_time.update(time.time() - end)
 
         input = input.to(args.device, non_blocking=True)
+        
+        # Debug: Show input tensor shape (first batch only)
+        if i == 0:
+            print(f'[Input Debug] Tensor shape: {input.shape}')  # (B, C, H, W)
+        
         target_indexs, target_length = codec.encode(target)
         preds = model(input) # preds: WBD (seq_len, batch, classes)
         preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size)
