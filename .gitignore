@@ -36,6 +36,3 @@ data/handwritten_ctr_data/val/
 checkpoints/
 *.pth.tar
 *.dgrl
-
-# Colab
-colab_train.ipynb
