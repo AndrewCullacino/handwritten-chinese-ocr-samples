@@ -333,7 +333,11 @@ def train(train_loader, val_loader, model, criterion, optimizer,
         
         target_indexs, target_length = codec.encode(target)
         preds = model(input) # preds: WBD (seq_len, batch, classes)
-        preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size)
+        preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size).to(args.device)
+        
+        # Move target tensors to the same device as preds
+        target_indexs_tensor = torch.from_numpy(target_indexs).to(args.device)
+        target_length_tensor = torch.from_numpy(target_length).to(args.device)
         
         # Debug: Check CTC sequence length requirement
         if i == 0:
@@ -347,9 +351,9 @@ def train(train_loader, val_loader, model, criterion, optimizer,
         
         # PyTorch CTCLoss requires log_softmax input (warpctc did this internally)
         loss = criterion(preds.log_softmax(2),
-                         torch.from_numpy(target_indexs),
+                         target_indexs_tensor,
                          preds_sizes,
-                         torch.from_numpy(target_length))
+                         target_length_tensor)
 
         # Check for zero loss (CTC failure)
         if loss.item() == 0.0 and i == 0:
