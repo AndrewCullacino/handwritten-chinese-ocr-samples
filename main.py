@@ -126,9 +126,8 @@ def main():
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable multiprocessing distributed training.')
     elif ngpus_per_node <= 1:
-        raise EnvironmentError(
-            'No enough GPUs for multiprocessing distributed training.'
-        )
+        args.multiprocessing_distributed = False
+        # Single GPU or CPU mode
     else:
         args.multiprocessing_distributed = True
 
