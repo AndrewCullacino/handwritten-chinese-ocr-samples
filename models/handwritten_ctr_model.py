@@ -119,34 +119,35 @@ class ResNet(nn.Module):
         x = self.conv0_2(x)
         x = self.bn0_2(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.maxpool(x)  # 1st: /2
 
         x = self.block1(x)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.maxpool(x)  # 2nd: /4
         x = self.dropout1(x)
 
         x = self.block2(x)
         x = self.conv2(x)
         x = self.bn2(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.maxpool(x)  # 3rd: /8
         x = self.dropout2(x)
 
         x = self.block3(x)
         x = self.conv3(x)
         x = self.bn3(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.maxpool(x)  # 4th: /16
         x = self.dropout3(x)
 
         x = self.block4(x)
         x = self.conv4(x)
         x = self.bn4(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        # REMOVED 5th maxpool to preserve sequence length for CTC
+        # x = self.maxpool(x)  # Was 5th: /32 - causes CTC failure with long labels
         x = self.dropout4(x)
 
         return x
@@ -163,7 +164,8 @@ class hctr_model(nn.Module):
         self.noutput = num_classes
 
         self.cnn = ResNet(1, 512, BasicBlock, [2, 4, 5, 1])
-        self.linear = nn.Linear(2048, self.noutput)
+        # With 4 maxpool: height 128 -> 8, channels 512, so 512*8=4096
+        self.linear = nn.Linear(4096, self.noutput)
 
     def forward(self, input):
         x = self.cnn(input)

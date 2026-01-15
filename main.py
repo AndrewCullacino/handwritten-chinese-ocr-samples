@@ -327,13 +327,28 @@ def train(train_loader, val_loader, model, criterion, optimizer,
 
         input = input.to(args.device, non_blocking=True)
         target_indexs, target_length = codec.encode(target)
-        preds = model(input) # preds: WBD
+        preds = model(input) # preds: WBD (seq_len, batch, classes)
         preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size)
+        
+        # Debug: Check CTC sequence length requirement
+        if i == 0:
+            seq_len = preds.size(0)
+            max_target = max(target_length)
+            print(f'[CTC Debug] Output seq_len: {seq_len}, Max target len: {max_target}')
+            if seq_len < max_target:
+                print(f'[CTC ERROR] seq_len ({seq_len}) < target_len ({max_target}) - Loss will be 0!')
+            else:
+                print(f'[CTC OK] seq_len >= target_len - Training should work!')
+        
         # PyTorch CTCLoss requires log_softmax input (warpctc did this internally)
         loss = criterion(preds.log_softmax(2),
                          torch.from_numpy(target_indexs),
                          preds_sizes,
                          torch.from_numpy(target_length))
+
+        # Check for zero loss (CTC failure)
+        if loss.item() == 0.0 and i == 0:
+            print(f'[CTC ERROR] Loss is 0.0 - CTC alignment failed!')
 
         # TODO: how about inf loss ?
         if math.isnan(loss.item()):
