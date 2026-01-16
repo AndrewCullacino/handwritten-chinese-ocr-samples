@@ -97,8 +97,19 @@ def parse_dgrl_file(filepath, debug=False):
             img_array = img_array.reshape(height, width)
             pos += img_size
             
-            # Skip line trailing data until we hit 0xFF
-            while pos < len(data) and data[pos] != 0xFF:
+            # Skip character bounding boxes (8 bytes per char: x, y, w, h each 2 bytes)
+            bbox_size = num_chars * 8
+            pos += bbox_size
+            
+            # Skip any remaining trailing data until we hit 0xFF or next valid header
+            # Look for either 0xFF padding or a reasonable num_chars value (1-200)
+            while pos < len(data) - 4:
+                next_val = struct.unpack('<I', data[pos:pos+4])[0]
+                if data[pos] == 0xFF:
+                    break
+                if 1 <= next_val <= 200:
+                    # Likely found the next line's num_chars
+                    break
                 pos += 1
             
             # Skip 0xFF padding bytes between lines

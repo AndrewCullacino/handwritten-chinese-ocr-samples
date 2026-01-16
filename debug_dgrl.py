@@ -100,16 +100,28 @@ def debug_dgrl_file(filepath, max_lines=3):
         pos += img_size
         print(f"  After image, pos={pos}")
         
+        # Skip character bounding boxes (8 bytes per char)
+        bbox_size = num_chars * 8
+        print(f"  Skipping {bbox_size} bytes of bounding boxes ({num_chars} chars * 8 bytes)")
+        pos += bbox_size
+        print(f"  After bboxes, pos={pos}")
+        
         # Show next 20 bytes
         next_bytes = data[pos:pos+20]
         print(f"  Next 20 bytes: {next_bytes.hex()}")
         
-        # Skip trailing data until 0xFF
+        # Skip trailing data until 0xFF or valid num_chars
         trailing_count = 0
-        while pos < len(data) and data[pos] != 0xFF:
+        while pos < len(data) - 4:
+            next_val = struct.unpack('<I', data[pos:pos+4])[0]
+            if data[pos] == 0xFF:
+                break
+            if 1 <= next_val <= 200:
+                print(f"  Found likely num_chars={next_val} at pos={pos}")
+                break
             trailing_count += 1
             pos += 1
-        print(f"  Skipped {trailing_count} trailing bytes")
+        print(f"  Skipped {trailing_count} additional trailing bytes")
         
         # Skip 0xFF padding
         ff_count = 0
