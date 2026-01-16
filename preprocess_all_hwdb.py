@@ -204,7 +204,13 @@ def process_dgrl_folder(folder_path, output_dir, split, all_chars, target_height
                 h, w = img.shape
                 ratio = target_height / h
                 new_w = max(1, int(w * ratio))
-                
+
+                # KEY FIX: Ensure minimum width for CTC (text_len * 20 pixels per char)
+                text_len = len(line_data['text'])
+                min_width = text_len * 20  # 20 pixels per character minimum
+                if new_w < min_width:
+                    new_w = min_width
+
                 pil_img = Image.fromarray(img)
                 pil_img = pil_img.resize((new_w, target_height), Image.Resampling.LANCZOS)
                 
