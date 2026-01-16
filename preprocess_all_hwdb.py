@@ -21,8 +21,15 @@ def _find_next_line(data, start_pos, debug=False):
     """Heuristic resync: scan forward to find plausible next line header.
     Looks for num_chars in [1,150] followed by valid dimensions.
     """
-    scan_limit = min(len(data) - 12, start_pos + 50000)
+    scan_limit = min(len(data) - 12, start_pos + 500000)  # Increased scan limit
+
+    if debug:
+        print(f"    Scanning from {start_pos} to {scan_limit} (range: {scan_limit - start_pos} bytes)")
+
     for pos in range(start_pos, scan_limit):
+        if pos + 4 > len(data):
+            break
+
         num_chars = struct.unpack('<I', data[pos:pos+4])[0]
         if 1 <= num_chars <= 150:
             txt_end = pos + 4 + num_chars * 2
@@ -33,6 +40,9 @@ def _find_next_line(data, start_pos, debug=False):
                     if debug:
                         print(f"    Resync: num_chars={num_chars} height={height} width={width} at pos={pos}")
                     return pos
+
+    if debug:
+        print(f"    No valid line header found in scan range")
     return None
 
 
@@ -76,14 +86,11 @@ def parse_dgrl_file(filepath, debug=False):
             # Number of characters
             num_chars = struct.unpack('<I', data[pos:pos+4])[0]
             pos += 4
-            
+
             if num_chars > 200 or num_chars == 0:  # Sanity check
-                resync_pos = _find_next_line(data, pos - 4, debug)
-                if resync_pos is None:
-                    break
-                pos = resync_pos
-                num_chars = struct.unpack('<I', data[pos:pos+4])[0]
-                pos += 4
+                if debug:
+                    print(f"  Line {line_idx}: Invalid num_chars={num_chars}, stopping parse")
+                break
             
             # Read GB codes (2 bytes each)
             text = ''
@@ -106,14 +113,12 @@ def parse_dgrl_file(filepath, debug=False):
             pos += 4
             width = struct.unpack('<I', data[pos:pos+4])[0]
             pos += 4
-            
+
             # Sanity check dimensions
             if height > 4000 or width > 8000 or height == 0 or width == 0:
-                resync_pos = _find_next_line(data, pos - 12, debug)
-                if resync_pos is None:
-                    break
-                pos = resync_pos
-                continue
+                if debug:
+                    print(f"  Line {line_idx}: Invalid dimensions h={height} w={width}, stopping parse")
+                break
             
             # Read pixel data
             img_size = height * width
@@ -127,15 +132,30 @@ def parse_dgrl_file(filepath, debug=False):
             # Skip character bounding boxes (8 bytes per char: x, y, w, h each 2 bytes)
             bbox_size = num_chars * 8
             pos += bbox_size
-            
-            # Try to find start of next line: either padding 0xFF or next plausible num_chars
-            resync_pos = _find_next_line(data, pos, debug)
-            if resync_pos is not None:
-                pos = resync_pos
+
+            # KEY FIX: After bbox data, there's variable-length trailing metadata.
+            # Use the _find_next_line helper to scan forward and find the next line header
+            if debug:
+                print(f"  Line {line_idx}: Looking for next line starting at pos {pos}")
+
+            next_pos = _find_next_line(data, pos, debug)
+
+            if next_pos is not None:
+                if debug:
+                    print(f"  Line {line_idx}: Found next line at pos {next_pos} (skipped {next_pos - pos} bytes)")
+                pos = next_pos
             else:
-                # Skip 0xFF padding bytes between lines
-                while pos < len(data) and data[pos] == 0xFF:
-                    pos += 1
+                # No more lines found - save this line and exit loop
+                if debug:
+                    print(f"  Line {line_idx}: No more lines found, stopping after line {line_idx + 1}")
+                if text:
+                    lines_data.append({
+                        'image': img_array,
+                        'text': text,
+                        'height': height,
+                        'width': width
+                    })
+                break
             
             if text:
                 lines_data.append({
