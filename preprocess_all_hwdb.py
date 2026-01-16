@@ -17,10 +17,28 @@ import argparse
 import random
 
 
+def _find_next_line(data, start_pos, debug=False):
+    """Heuristic resync: scan forward to find plausible next line header.
+    Looks for num_chars in [1,150] followed by valid dimensions.
+    """
+    scan_limit = min(len(data) - 12, start_pos + 50000)
+    for pos in range(start_pos, scan_limit):
+        num_chars = struct.unpack('<I', data[pos:pos+4])[0]
+        if 1 <= num_chars <= 150:
+            txt_end = pos + 4 + num_chars * 2
+            if txt_end + 8 <= len(data):
+                height = struct.unpack('<I', data[txt_end:txt_end+4])[0]
+                width = struct.unpack('<I', data[txt_end+4:txt_end+8])[0]
+                if 1 <= height <= 4000 and 1 <= width <= 8000:
+                    if debug:
+                        print(f"    Resync: num_chars={num_chars} height={height} width={width} at pos={pos}")
+                    return pos
+    return None
+
+
 def parse_dgrl_file(filepath, debug=False):
     """Parse a single DGRL file and extract text lines with images.
-    
-    This is the proven working parser from preprocess_dgrl.py
+    Uses a resync heuristic to handle trailing bbox/meta data.
     """
     lines_data = []
     
@@ -60,7 +78,12 @@ def parse_dgrl_file(filepath, debug=False):
             pos += 4
             
             if num_chars > 200 or num_chars == 0:  # Sanity check
-                break
+                resync_pos = _find_next_line(data, pos - 4, debug)
+                if resync_pos is None:
+                    break
+                pos = resync_pos
+                num_chars = struct.unpack('<I', data[pos:pos+4])[0]
+                pos += 4
             
             # Read GB codes (2 bytes each)
             text = ''
@@ -85,8 +108,12 @@ def parse_dgrl_file(filepath, debug=False):
             pos += 4
             
             # Sanity check dimensions
-            if height > 2000 or width > 8000 or height == 0 or width == 0:
-                break
+            if height > 4000 or width > 8000 or height == 0 or width == 0:
+                resync_pos = _find_next_line(data, pos - 12, debug)
+                if resync_pos is None:
+                    break
+                pos = resync_pos
+                continue
             
             # Read pixel data
             img_size = height * width
@@ -101,20 +128,14 @@ def parse_dgrl_file(filepath, debug=False):
             bbox_size = num_chars * 8
             pos += bbox_size
             
-            # Skip any remaining trailing data until we hit 0xFF or next valid header
-            # Look for either 0xFF padding or a reasonable num_chars value (1-200)
-            while pos < len(data) - 4:
-                next_val = struct.unpack('<I', data[pos:pos+4])[0]
-                if data[pos] == 0xFF:
-                    break
-                if 1 <= next_val <= 200:
-                    # Likely found the next line's num_chars
-                    break
-                pos += 1
-            
-            # Skip 0xFF padding bytes between lines
-            while pos < len(data) and data[pos] == 0xFF:
-                pos += 1
+            # Try to find start of next line: either padding 0xFF or next plausible num_chars
+            resync_pos = _find_next_line(data, pos, debug)
+            if resync_pos is not None:
+                pos = resync_pos
+            else:
+                # Skip 0xFF padding bytes between lines
+                while pos < len(data) and data[pos] == 0xFF:
+                    pos += 1
             
             if text:
                 lines_data.append({

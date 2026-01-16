@@ -204,38 +204,121 @@ def main():
             for line in val_lines:
                 img_name = line.strip().split(',')[0]
                 src = os.path.join(train_dir, img_name)
-                dst = os.path.join(val_dir, img_name)
-                if os.path.exists(src):
-                    os.rename(src, dst)
-            
-            with open(train_gt, 'w', encoding='utf-8') as f:
-                f.writelines(train_lines)
-            with open(os.path.join(args.output_dir, 'val_img_id_gt.txt'), 'w', encoding='utf-8') as f:
-                f.writelines(val_lines)
-            
-            print(f"Split: {len(train_lines)} train, {len(val_lines)} val")
-    
-    # Process test data
-    if os.path.isdir(args.test_dir):
-        print("Processing test data...")
-        chars = process_directory(args.test_dir, args.output_dir, 'test', args.target_height)
-        all_chars.update(chars)
-    
-    # Save char list (merge with existing)
-    existing = 'data/handwritten_ctr_data/chars_list.txt'
-    if os.path.exists(existing):
-        with open(existing, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    all_chars.add(line.strip())
-    
-    with open(os.path.join(args.output_dir, 'chars_list.txt'), 'w', encoding='utf-8') as f:
-        for char in sorted(all_chars):
-            f.write(char + '\n')
-    
-    print(f"\nDone! {len(all_chars)} unique characters")
-    print(f"Output: {args.output_dir}")
+                def _find_next_line(data, start_pos, debug=False):
+                    """Heuristic resync: scan forward to find plausible next line header."""
+                    scan_limit = min(len(data) - 12, start_pos + 50000)
+                    for pos in range(start_pos, scan_limit):
+                        num_chars = struct.unpack('<I', data[pos:pos+4])[0]
+                        if 1 <= num_chars <= 150:
+                            txt_end = pos + 4 + num_chars * 2
+                            if txt_end + 8 <= len(data):
+                                height = struct.unpack('<I', data[txt_end:txt_end+4])[0]
+                                width = struct.unpack('<I', data[txt_end+4:txt_end+8])[0]
+                                if 1 <= height <= 4000 and 1 <= width <= 8000:
+                                    if debug:
+                                        print(f"Resync: num_chars={num_chars} height={height} width={width} at pos={pos}")
+                                    return pos
+                    return None
 
 
-if __name__ == '__main__':
-    main()
+                def parse_dgrl_file(filepath, debug=False):
+                    """Parse a single DGRL file and extract text lines with images."""
+                    lines_data = []
+    
+                    try:
+                        with open(filepath, 'rb') as f:
+                            data = f.read()
+        
+                        if len(data) < 85:
+                            return lines_data
+        
+                        # Header: 73 bytes
+                        pos = 73
+                        page_w = struct.unpack('<I', data[pos:pos+4])[0]
+                        pos += 4
+                        page_h = struct.unpack('<I', data[pos:pos+4])[0]
+                        pos += 4
+                        num_lines = struct.unpack('<I', data[pos:pos+4])[0]
+                        pos += 4
+        
+                        if debug:
+                            print(f"Page: {page_w}x{page_h}, {num_lines} lines")
+        
+                        if num_lines > 50 or num_lines == 0:
+                            return lines_data
+        
+                        for line_idx in range(num_lines):
+                            if pos + 4 > len(data):
+                                break
+            
+                            num_chars = struct.unpack('<I', data[pos:pos+4])[0]
+                            pos += 4
+            
+                            if num_chars > 200 or num_chars == 0:
+                                resync_pos = _find_next_line(data, pos - 4, debug)
+                                if resync_pos is None:
+                                    break
+                                pos = resync_pos
+                                num_chars = struct.unpack('<I', data[pos:pos+4])[0]
+                                pos += 4
+            
+                            text = ''
+                            for _ in range(num_chars):
+                                if pos + 2 > len(data):
+                                    break
+                                code = data[pos:pos+2]
+                                pos += 2
+                                try:
+                                    char = code.decode('gb18030')
+                                    text += char
+                                except:
+                                    pass
+            
+                            if pos + 8 > len(data):
+                                break
+            
+                            height = struct.unpack('<I', data[pos:pos+4])[0]
+                            pos += 4
+                            width = struct.unpack('<I', data[pos:pos+4])[0]
+                            pos += 4
+            
+                            if height > 4000 or width > 8000 or height == 0 or width == 0:
+                                resync_pos = _find_next_line(data, pos - 12, debug)
+                                if resync_pos is None:
+                                    break
+                                pos = resync_pos
+                                continue
+            
+                            img_size = height * width
+                            if pos + img_size > len(data):
+                                break
+            
+                            img_array = np.frombuffer(data[pos:pos+img_size], dtype=np.uint8)
+                            img_array = img_array.reshape(height, width)
+                            pos += img_size
+            
+                            if text:
+                                lines_data.append({
+                                    'image': img_array,
+                                    'text': text,
+                                    'height': height,
+                                    'width': width
+                                })
+                
+                            # Skip character bounding boxes (8 bytes per char)
+                            bbox_size = num_chars * 8
+                            pos += bbox_size
+            
+                            # Try to resync to next line header
+                            resync_pos = _find_next_line(data, pos, debug)
+                            if resync_pos is not None:
+                                pos = resync_pos
+                            else:
+                                while pos < len(data) and data[pos] == 0xFF:
+                                    pos += 1
+                
+                    except Exception as e:
+                        if debug:
+                            print(f"Error parsing {filepath}: {e}")
+    
+                    return lines_data
