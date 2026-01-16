@@ -174,63 +174,87 @@ def parse_dgrl_file(filepath, debug=False):
     return lines_data
 
 
-def process_dgrl_folder(folder_path, output_dir, split, all_chars, target_height=128):
-    """Process all DGRL files in a folder."""
+def process_single_dgrl(args):
+    """Worker function to process a single DGRL file."""
+    dgrl_path, output_dir, split, target_height = args
+
+    page_name = os.path.splitext(os.path.basename(dgrl_path))[0]
+    split_dir = os.path.join(output_dir, split)
+
+    lines = parse_dgrl_file(dgrl_path)
+
+    img_gt_list = []
+    chars_set = set()
+
+    for line_idx, line_data in enumerate(lines):
+        try:
+            # Resize to target height
+            img = line_data['image']
+            h, w = img.shape
+            ratio = target_height / h
+            new_w = max(1, int(w * ratio))
+
+            # KEY FIX: Ensure minimum width for CTC (text_len * 20 pixels per char)
+            text_len = len(line_data['text'])
+            min_width = text_len * 20  # 20 pixels per character minimum
+            if new_w < min_width:
+                new_w = min_width
+
+            # Use cv2 instead of PIL (10x faster)
+            resized_img = cv2.resize(img, (new_w, target_height), interpolation=cv2.INTER_LINEAR)
+
+            # Save image
+            img_name = f"{page_name}_L{line_idx:03d}.png"
+            img_path = os.path.join(split_dir, img_name)
+            cv2.imwrite(img_path, resized_img)
+
+            img_gt_list.append((img_name, line_data['text']))
+
+            # Collect characters
+            for char in line_data['text']:
+                chars_set.add(char)
+
+        except Exception as e:
+            pass  # Skip problematic lines silently
+
+    return img_gt_list, chars_set, len(lines) > 0
+
+
+def process_dgrl_folder(folder_path, output_dir, split, all_chars, target_height=128, num_workers=4):
+    """Process all DGRL files in a folder with multiprocessing."""
     if not os.path.exists(folder_path):
         print(f"  Folder not found: {folder_path}")
         return []
-    
+
     dgrl_files = [f for f in os.listdir(folder_path) if f.endswith('.dgrl')]
     print(f"  Found {len(dgrl_files)} DGRL files in {os.path.basename(folder_path)}")
-    
+
     split_dir = os.path.join(output_dir, split)
     os.makedirs(split_dir, exist_ok=True)
-    
+
+    # Prepare arguments for parallel processing
+    args_list = [
+        (os.path.join(folder_path, dgrl_file), output_dir, split, target_height)
+        for dgrl_file in sorted(dgrl_files)
+    ]
+
     img_gt_list = []
     processed_files = 0
     total_lines = 0
-    
-    for dgrl_file in sorted(dgrl_files):
-        dgrl_path = os.path.join(folder_path, dgrl_file)
-        page_name = os.path.splitext(dgrl_file)[0]
-        
-        lines = parse_dgrl_file(dgrl_path)
-        
-        if lines:
+
+    # Process files in parallel with progress tracking
+    print(f"    Processing with {num_workers} workers...")
+    with Pool(num_workers) as pool:
+        results = list(pool.imap(process_single_dgrl, args_list))
+
+    # Merge results
+    for file_img_gt_list, chars_set, has_lines in results:
+        img_gt_list.extend(file_img_gt_list)
+        all_chars.update(chars_set)
+        total_lines += len(file_img_gt_list)
+        if has_lines:
             processed_files += 1
-            
-        for line_idx, line_data in enumerate(lines):
-            try:
-                # Resize to target height
-                img = line_data['image']
-                h, w = img.shape
-                ratio = target_height / h
-                new_w = max(1, int(w * ratio))
 
-                # KEY FIX: Ensure minimum width for CTC (text_len * 20 pixels per char)
-                text_len = len(line_data['text'])
-                min_width = text_len * 20  # 20 pixels per character minimum
-                if new_w < min_width:
-                    new_w = min_width
-
-                # Use cv2 instead of PIL (10x faster)
-                resized_img = cv2.resize(img, (new_w, target_height), interpolation=cv2.INTER_LINEAR)
-                
-                # Save image
-                img_name = f"{page_name}_L{line_idx:03d}.png"
-                img_path = os.path.join(split_dir, img_name)
-                cv2.imwrite(img_path, resized_img)
-                
-                img_gt_list.append((img_name, line_data['text']))
-                total_lines += 1
-                
-                # Collect characters
-                for char in line_data['text']:
-                    all_chars.add(char)
-                    
-            except Exception as e:
-                pass  # Skip problematic lines silently
-    
     print(f"    Processed {processed_files}/{len(dgrl_files)} files, {total_lines} lines")
     return img_gt_list
 
@@ -243,6 +267,8 @@ def main():
                         help='Output directory for processed data')
     parser.add_argument('--val_ratio', type=float, default=0.1,
                         help='Validation split ratio (default: 0.1)')
+    parser.add_argument('--workers', type=int, default=4,
+                        help='Number of parallel workers (default: 4)')
     args = parser.parse_args()
     
     drive_root = args.drive_root
@@ -275,7 +301,7 @@ def main():
     for folder in train_folders:
         if os.path.exists(folder):
             print(f"\n  Processing: {os.path.basename(folder)}")
-            samples = process_dgrl_folder(folder, output_dir, 'train_temp', all_chars)
+            samples = process_dgrl_folder(folder, output_dir, 'train_temp', all_chars, num_workers=args.workers)
             all_train_samples.extend(samples)
         else:
             print(f"  Skipping (not found): {folder}")
@@ -289,7 +315,7 @@ def main():
     for folder in test_folders:
         if os.path.exists(folder):
             print(f"\n  Processing: {os.path.basename(folder)}")
-            samples = process_dgrl_folder(folder, output_dir, 'test', all_chars)
+            samples = process_dgrl_folder(folder, output_dir, 'test', all_chars, num_workers=args.workers)
             all_test_samples.extend(samples)
         else:
             print(f"  Skipping (not found): {folder}")
