@@ -17,6 +17,9 @@ import argparse
 import random
 from multiprocessing import Pool, cpu_count
 import cv2
+import shutil
+import time
+from pathlib import Path
 
 
 def _find_next_line(data, start_pos, debug=False):
@@ -203,10 +206,10 @@ def process_single_dgrl(args):
             # Use cv2 instead of PIL (10x faster)
             resized_img = cv2.resize(img, (new_w, target_height), interpolation=cv2.INTER_LINEAR)
 
-            # Save image
+            # Save image with no compression for faster writes to local storage
             img_name = f"{page_name}_L{line_idx:03d}.png"
             img_path = os.path.join(split_dir, img_name)
-            cv2.imwrite(img_path, resized_img)
+            cv2.imwrite(img_path, resized_img, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
             img_gt_list.append((img_name, line_data['text']))
 
@@ -269,14 +272,43 @@ def main():
                         help='Validation split ratio (default: 0.1)')
     parser.add_argument('--workers', type=int, default=4,
                         help='Number of parallel workers (default: 4)')
+    parser.add_argument('--use_local_storage', type=bool, default=True,
+                        help='Use local /tmp for faster processing (default: True)')
     args = parser.parse_args()
-    
+
     drive_root = args.drive_root
-    output_dir = os.path.join(drive_root, args.output_dir)
+    final_output_dir = os.path.join(drive_root, args.output_dir)
+
+    # OPTIMIZATION: Use local /tmp storage for fast processing
+    if args.use_local_storage:
+        # Check available disk space
+        disk_usage = shutil.disk_usage('/tmp')
+        required_space = 2_000_000_000  # 2GB safety margin
+        available_gb = disk_usage.free / 1e9
+
+        if disk_usage.free < required_space:
+            print(f"WARNING: Low disk space ({available_gb:.1f}GB free, recommend 2GB+)")
+            print("Falling back to direct Google Drive writes...")
+            output_dir = final_output_dir
+            use_local = False
+        else:
+            output_dir = '/tmp/hwdb_processing'
+            use_local = True
+            print(f"Using local storage: {output_dir} ({available_gb:.1f}GB available)")
+    else:
+        output_dir = final_output_dir
+        use_local = False
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
     print("=" * 60)
-    print("HWDB2.x Full Dataset Preprocessing")
+    print("HWDB2.x Full Dataset Preprocessing (OPTIMIZED)")
+    print("=" * 60)
+    if use_local:
+        print(f"Local processing dir: {output_dir}")
+        print(f"Final destination: {final_output_dir}")
+    else:
+        print(f"Output directory: {output_dir}")
     print("=" * 60)
     
     # Define folder mappings
@@ -379,7 +411,46 @@ def main():
     with open(os.path.join(output_dir, 'chars_list.txt'), 'w', encoding='utf-8') as f:
         for char in chars_list:
             f.write(char + '\n')
-    
+
+    # OPTIMIZATION: Bulk copy from local storage to Google Drive
+    if use_local and output_dir != final_output_dir:
+        print("\n" + "=" * 60)
+        print("Copying processed data to Google Drive...")
+        print("=" * 60)
+
+        print(f"Source: {output_dir}")
+        print(f"Destination: {final_output_dir}")
+
+        start_time = time.time()
+
+        # Bulk copy entire directory tree
+        shutil.copytree(output_dir, final_output_dir, dirs_exist_ok=True)
+
+        copy_time = time.time() - start_time
+        print(f"Copy completed in {copy_time:.1f} seconds")
+
+        # Verify copy succeeded
+        local_png_count = len(list(Path(output_dir).rglob('*.png')))
+        drive_png_count = len(list(Path(final_output_dir).rglob('*.png')))
+        local_txt_count = len(list(Path(output_dir).rglob('*.txt')))
+        drive_txt_count = len(list(Path(final_output_dir).rglob('*.txt')))
+
+        print(f"\nVerification:")
+        print(f"  PNG files: {local_png_count} local -> {drive_png_count} Drive")
+        print(f"  TXT files: {local_txt_count} local -> {drive_txt_count} Drive")
+
+        if local_png_count != drive_png_count or local_txt_count != drive_txt_count:
+            print("\nWARNING: File count mismatch! Copy may have failed.")
+            print(f"Keeping local files at: {output_dir}")
+        else:
+            print("\n✅ Copy verified successfully!")
+            print("Cleaning up local files...")
+            shutil.rmtree(output_dir)
+            print(f"✅ Local files removed: {output_dir}")
+
+        # Update output_dir for final summary
+        output_dir = final_output_dir
+
     # Print summary
     print("\n" + "=" * 60)
     print("Preprocessing Complete!")
