@@ -11,85 +11,120 @@ Usage in Colab:
 
 import os
 import struct
-import argparse
+import numpy as np
 from PIL import Image
-import io
+import argparse
 import random
-from collections import defaultdict
 
 
-def parse_dgrl_file(dgrl_path):
-    """Parse a single DGRL file and yield (image_bytes, label) tuples."""
-    with open(dgrl_path, 'rb') as f:
-        # Read header
-        header_size = struct.unpack('<I', f.read(4))[0]
-        format_code = f.read(8).rstrip(b'\x00').decode('ascii', errors='ignore')
-        illustration = f.read(header_size - 62).rstrip(b'\x00').decode('gb18030', errors='ignore')
+def parse_dgrl_file(filepath, debug=False):
+    """Parse a single DGRL file and extract text lines with images.
+    
+    This is the proven working parser from preprocess_dgrl.py
+    """
+    lines_data = []
+    
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read()
         
-        # Read metadata
-        code_type = f.read(20).rstrip(b'\x00').decode('ascii', errors='ignore')
-        code_length = struct.unpack('<H', f.read(2))[0]
-        bits_per_pixel = struct.unpack('<H', f.read(2))[0]
+        if len(data) < 85:
+            return lines_data
         
-        # Skip to line count
-        f.seek(header_size)
+        # Header: 73 bytes
+        # Offset 73: page_width (4 bytes)
+        # Offset 77: page_height (4 bytes)  
+        # Offset 81: num_lines (4 bytes)
+        # Offset 85: line records start
         
-        # Read number of lines in this page
-        num_lines = struct.unpack('<I', f.read(4))[0]
+        pos = 73
+        page_w = struct.unpack('<I', data[pos:pos+4])[0]
+        pos += 4
+        page_h = struct.unpack('<I', data[pos:pos+4])[0]
+        pos += 4
+        num_lines = struct.unpack('<I', data[pos:pos+4])[0]
+        pos += 4
+        
+        if debug:
+            print(f"  Page: {page_w}x{page_h}, {num_lines} lines")
+        
+        if num_lines > 50 or num_lines == 0:  # Sanity check
+            return lines_data
         
         for line_idx in range(num_lines):
-            try:
-                # Read line header
-                line_header_size = struct.unpack('<I', f.read(4))[0]
-                if line_header_size == 0:
-                    break
-                    
-                # Read label (in GB18030)
-                label_bytes = f.read(line_header_size - 4)
-                # Find null terminator
-                null_pos = label_bytes.find(b'\x00')
-                if null_pos != -1:
-                    label_bytes = label_bytes[:null_pos]
-                label = label_bytes.decode('gb18030', errors='ignore').strip()
-                
-                if not label:
-                    continue
-                
-                # Read line image dimensions
-                line_height = struct.unpack('<I', f.read(4))[0]
-                line_width = struct.unpack('<I', f.read(4))[0]
-                
-                if line_height == 0 or line_width == 0 or line_height > 5000 or line_width > 5000:
-                    continue
-                
-                # Read image data
-                image_size = line_height * line_width
-                image_data = f.read(image_size)
-                
-                if len(image_data) != image_size:
-                    break
-                
-                yield image_data, line_width, line_height, label
-                
-                # Skip padding (0xFF bytes between lines)
-                while True:
-                    peek = f.read(1)
-                    if not peek:
-                        break
-                    if peek != b'\xff':
-                        f.seek(-1, 1)
-                        break
-                        
-            except Exception as e:
-                print(f"  Warning: Error parsing line {line_idx}: {e}")
+            if pos + 4 > len(data):
                 break
+            
+            # Number of characters
+            num_chars = struct.unpack('<I', data[pos:pos+4])[0]
+            pos += 4
+            
+            if num_chars > 200 or num_chars == 0:  # Sanity check
+                break
+            
+            # Read GB codes (2 bytes each)
+            text = ''
+            for _ in range(num_chars):
+                if pos + 2 > len(data):
+                    break
+                code = data[pos:pos+2]
+                pos += 2
+                try:
+                    char = code.decode('gb18030')
+                    text += char
+                except:
+                    pass
+            
+            if pos + 8 > len(data):
+                break
+            
+            # Image dimensions (height first, then width)
+            height = struct.unpack('<I', data[pos:pos+4])[0]
+            pos += 4
+            width = struct.unpack('<I', data[pos:pos+4])[0]
+            pos += 4
+            
+            # Sanity check dimensions
+            if height > 2000 or width > 8000 or height == 0 or width == 0:
+                break
+            
+            # Read pixel data
+            img_size = height * width
+            if pos + img_size > len(data):
+                break
+            
+            img_array = np.frombuffer(data[pos:pos+img_size], dtype=np.uint8)
+            img_array = img_array.reshape(height, width)
+            pos += img_size
+            
+            # Skip line trailing data until we hit 0xFF
+            while pos < len(data) and data[pos] != 0xFF:
+                pos += 1
+            
+            # Skip 0xFF padding bytes between lines
+            while pos < len(data) and data[pos] == 0xFF:
+                pos += 1
+            
+            if text:
+                lines_data.append({
+                    'image': img_array,
+                    'text': text,
+                    'height': height,
+                    'width': width
+                })
+                
+    except Exception as e:
+        if debug:
+            print(f"  Error parsing {filepath}: {e}")
+    
+    return lines_data
 
 
-def process_dgrl_folder(folder_path, output_dir, split, all_chars, sample_count):
+def process_dgrl_folder(folder_path, output_dir, split, all_chars, target_height=128):
     """Process all DGRL files in a folder."""
     if not os.path.exists(folder_path):
         print(f"  Folder not found: {folder_path}")
-        return sample_count
+        return []
     
     dgrl_files = [f for f in os.listdir(folder_path) if f.endswith('.dgrl')]
     print(f"  Found {len(dgrl_files)} DGRL files in {os.path.basename(folder_path)}")
@@ -98,35 +133,46 @@ def process_dgrl_folder(folder_path, output_dir, split, all_chars, sample_count)
     os.makedirs(split_dir, exist_ok=True)
     
     img_gt_list = []
+    processed_files = 0
+    total_lines = 0
     
     for dgrl_file in sorted(dgrl_files):
         dgrl_path = os.path.join(folder_path, dgrl_file)
         page_name = os.path.splitext(dgrl_file)[0]
         
-        try:
-            for line_idx, (image_data, width, height, label) in enumerate(parse_dgrl_file(dgrl_path)):
+        lines = parse_dgrl_file(dgrl_path)
+        
+        if lines:
+            processed_files += 1
+            
+        for line_idx, line_data in enumerate(lines):
+            try:
+                # Resize to target height
+                img = line_data['image']
+                h, w = img.shape
+                ratio = target_height / h
+                new_w = max(1, int(w * ratio))
+                
+                pil_img = Image.fromarray(img)
+                pil_img = pil_img.resize((new_w, target_height), Image.Resampling.LANCZOS)
+                
                 # Save image
                 img_name = f"{page_name}_L{line_idx:03d}.png"
                 img_path = os.path.join(split_dir, img_name)
+                pil_img.save(img_path)
                 
-                try:
-                    img = Image.frombytes('L', (width, height), image_data)
-                    img.save(img_path)
+                img_gt_list.append((img_name, line_data['text']))
+                total_lines += 1
+                
+                # Collect characters
+                for char in line_data['text']:
+                    all_chars.add(char)
                     
-                    img_gt_list.append((img_name, label))
-                    sample_count += 1
-                    
-                    # Collect characters
-                    for char in label:
-                        all_chars.add(char)
-                        
-                except Exception as e:
-                    print(f"    Warning: Failed to save {img_name}: {e}")
-                    
-        except Exception as e:
-            print(f"    Warning: Failed to parse {dgrl_file}: {e}")
+            except Exception as e:
+                pass  # Skip problematic lines silently
     
-    return sample_count, img_gt_list
+    print(f"    Processed {processed_files}/{len(dgrl_files)} files, {total_lines} lines")
+    return img_gt_list
 
 
 def main():
@@ -163,67 +209,73 @@ def main():
     all_chars = set()
     
     # Process training data
-    print("\n[1/2] Processing Training Data...")
-    train_samples = []
-    train_count = 0
+    print("\n[1/3] Processing Training Data...")
+    all_train_samples = []
     
     for folder in train_folders:
-        print(f"\n  Processing: {os.path.basename(folder)}")
-        train_count, samples = process_dgrl_folder(folder, output_dir, 'train_all', all_chars, train_count)
-        train_samples.extend(samples)
+        if os.path.exists(folder):
+            print(f"\n  Processing: {os.path.basename(folder)}")
+            samples = process_dgrl_folder(folder, output_dir, 'train_temp', all_chars)
+            all_train_samples.extend(samples)
+        else:
+            print(f"  Skipping (not found): {folder}")
     
-    print(f"\n  Total training samples collected: {len(train_samples)}")
+    print(f"\n  Total training samples collected: {len(all_train_samples)}")
     
-    # Split into train and validation
+    # Process test data
+    print("\n[2/3] Processing Test Data...")
+    all_test_samples = []
+    
+    for folder in test_folders:
+        if os.path.exists(folder):
+            print(f"\n  Processing: {os.path.basename(folder)}")
+            samples = process_dgrl_folder(folder, output_dir, 'test', all_chars)
+            all_test_samples.extend(samples)
+        else:
+            print(f"  Skipping (not found): {folder}")
+    
+    print(f"\n  Total test samples: {len(all_test_samples)}")
+    
+    # Split train into train and validation
+    print("\n[3/3] Splitting train/val and saving metadata...")
+    
     random.seed(42)
-    random.shuffle(train_samples)
+    random.shuffle(all_train_samples)
     
-    val_size = int(len(train_samples) * args.val_ratio)
-    val_samples = train_samples[:val_size]
-    train_samples = train_samples[val_size:]
+    val_size = int(len(all_train_samples) * args.val_ratio)
+    val_samples = all_train_samples[:val_size]
+    train_samples = all_train_samples[val_size:]
     
-    # Move validation samples to val folder
-    train_all_dir = os.path.join(output_dir, 'train_all')
+    # Create train and val directories, move files
+    train_temp_dir = os.path.join(output_dir, 'train_temp')
     train_dir = os.path.join(output_dir, 'train')
     val_dir = os.path.join(output_dir, 'val')
     
     os.makedirs(train_dir, exist_ok=True)
     os.makedirs(val_dir, exist_ok=True)
     
-    print(f"\n  Splitting: {len(train_samples)} train, {len(val_samples)} val")
-    
-    # Move files
+    # Move training files
     for img_name, label in train_samples:
-        src = os.path.join(train_all_dir, img_name)
+        src = os.path.join(train_temp_dir, img_name)
         dst = os.path.join(train_dir, img_name)
         if os.path.exists(src):
             os.rename(src, dst)
     
+    # Move validation files
     for img_name, label in val_samples:
-        src = os.path.join(train_all_dir, img_name)
+        src = os.path.join(train_temp_dir, img_name)
         dst = os.path.join(val_dir, img_name)
         if os.path.exists(src):
             os.rename(src, dst)
     
     # Clean up temp folder
-    if os.path.exists(train_all_dir):
-        os.rmdir(train_all_dir)
-    
-    # Process test data
-    print("\n[2/2] Processing Test Data...")
-    test_samples = []
-    test_count = 0
-    
-    for folder in test_folders:
-        print(f"\n  Processing: {os.path.basename(folder)}")
-        test_count, samples = process_dgrl_folder(folder, output_dir, 'test', all_chars, test_count)
-        test_samples.extend(samples)
-    
-    print(f"\n  Total test samples: {len(test_samples)}")
+    try:
+        if os.path.exists(train_temp_dir):
+            os.rmdir(train_temp_dir)
+    except:
+        pass
     
     # Save image-groundtruth files
-    print("\n[3/3] Saving metadata files...")
-    
     with open(os.path.join(output_dir, 'train_img_id_gt.txt'), 'w', encoding='utf-8') as f:
         for img_name, label in train_samples:
             f.write(f"{img_name},{label}\n")
@@ -233,11 +285,10 @@ def main():
             f.write(f"{img_name},{label}\n")
     
     with open(os.path.join(output_dir, 'test_img_id_gt.txt'), 'w', encoding='utf-8') as f:
-        for img_name, label in test_samples:
+        for img_name, label in all_test_samples:
             f.write(f"{img_name},{label}\n")
     
     # Save chars list
-    # Sort characters for consistency
     chars_list = sorted(list(all_chars))
     with open(os.path.join(output_dir, 'chars_list.txt'), 'w', encoding='utf-8') as f:
         for char in chars_list:
@@ -250,15 +301,15 @@ def main():
     print(f"Output directory: {output_dir}")
     print(f"Training samples: {len(train_samples)}")
     print(f"Validation samples: {len(val_samples)}")
-    print(f"Test samples: {len(test_samples)}")
-    print(f"Total samples: {len(train_samples) + len(val_samples) + len(test_samples)}")
+    print(f"Test samples: {len(all_test_samples)}")
+    print(f"Total samples: {len(train_samples) + len(val_samples) + len(all_test_samples)}")
     print(f"Character vocabulary: {len(chars_list)}")
     print("=" * 60)
     
-    # Verify sample labels
-    print("\nSample labels (first 5 training samples):")
-    for img_name, label in train_samples[:5]:
-        print(f"  {img_name}: {label[:30]}{'...' if len(label) > 30 else ''}")
+    # Show sample labels
+    print("\nSample training labels:")
+    for img_name, label in train_samples[:3]:
+        print(f"  {img_name}: {label[:40]}{'...' if len(label) > 40 else ''}")
 
 
 if __name__ == '__main__':
