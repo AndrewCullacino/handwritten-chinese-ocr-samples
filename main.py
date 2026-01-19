@@ -25,7 +25,6 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
-from torch.cuda.amp import autocast, GradScaler
 import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
@@ -243,8 +242,8 @@ def main_worker(gpu, ngpus_per_node, args):
         # Initialize Amp. (Removed - apex not available)
         # model, optimizer = amp.initialize(model, optimizer, ...)
 
-        # Mixed Precision Training (AMP) - native PyTorch implementation
-        scaler = GradScaler()
+        # Mixed Precision Training (AMP) - new PyTorch 2.0+ API
+        scaler = torch.amp.GradScaler('cuda')
         print("INFO: Mixed precision training (AMP) enabled for 2-3x speedup on A100")
 
     #######################################################################
@@ -271,7 +270,11 @@ def main_worker(gpu, ngpus_per_node, args):
 
     #######################################################################
     # Data loading code
-    AlignCollate_train = AlignCollate(imgH=args.img_height, PAD=args.PAD)
+    # max_width=1600 prevents OOM on very long text lines
+    # Adjust based on your GPU memory (A100 40GB: 1600, A100 80GB: 2000, V100: 1200)
+    max_width = 1600
+    
+    AlignCollate_train = AlignCollate(imgH=args.img_height, PAD=args.PAD, max_width=max_width)
     train_dataset = ImageDataset(data_path=args.data,
                                  img_shape=(1, args.img_height),
                                  phase='train',
@@ -291,7 +294,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                                persistent_workers=args.workers > 0,
                                                prefetch_factor=4 if args.workers > 0 else None)
 
-    AlignCollate_val = AlignCollate(imgH=args.img_height, PAD=args.PAD)
+    AlignCollate_val = AlignCollate(imgH=args.img_height, PAD=args.PAD, max_width=max_width)
     val_dataset = ImageDataset(data_path=args.data,
                                img_shape=(1, args.img_height),
                                phase='val',
@@ -305,7 +308,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                              persistent_workers=args.workers > 0,
                                              prefetch_factor=4 if args.workers > 0 else None)
 
-    AlignCollate_test = AlignCollate(imgH=args.img_height, PAD=args.PAD)
+    AlignCollate_test = AlignCollate(imgH=args.img_height, PAD=args.PAD, max_width=max_width)
     test_dataset = ImageDataset(data_path=args.data,
                                 img_shape=(1, args.img_height),
                                 phase='test',
@@ -378,8 +381,8 @@ def train(train_loader, val_loader, model, criterion, optimizer, scaler,
         
         target_indexs, target_length = codec.encode(target)
 
-        # Forward pass with mixed precision (AMP)
-        with autocast():
+        # Forward pass with mixed precision (AMP) - new API for PyTorch 2.0+
+        with torch.amp.autocast('cuda'):
             preds = model(input) # preds: WBD (seq_len, batch, classes)
 
             # FIX: Use actual batch size (last batch might be smaller)
