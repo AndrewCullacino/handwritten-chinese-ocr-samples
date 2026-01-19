@@ -193,6 +193,7 @@ def main():
     parser.add_argument('--output_dir', required=True, help='Output directory for processed images')
     parser.add_argument('--target_height', type=int, default=128, help='Target image height (default: 128)')
     parser.add_argument('--workers', type=int, default=4, help='Number of parallel workers')
+    parser.add_argument('--val_split', type=float, default=0.1, help='Validation split ratio (default: 0.1)')
 
     args = parser.parse_args()
 
@@ -225,10 +226,59 @@ def main():
         if line_count > 0:
             print(f"  ✓ {base_name}: {line_count} lines")
 
-    # Save metadata
-    metadata_path = os.path.join(args.output_dir, 'img_gt.txt')
-    with open(metadata_path, 'w', encoding='utf-8') as f:
-        for img_name, text in all_img_gt_pairs:
+    # Split into train/val/test
+    import random
+    random.seed(42)
+    random.shuffle(all_img_gt_pairs)
+
+    val_size = int(len(all_img_gt_pairs) * args.val_split)
+    test_size = int(len(all_img_gt_pairs) * args.val_split)
+
+    val_pairs = all_img_gt_pairs[:val_size]
+    test_pairs = all_img_gt_pairs[val_size:val_size + test_size]
+    train_pairs = all_img_gt_pairs[val_size + test_size:]
+
+    # Create subdirectories
+    train_dir = os.path.join(args.output_dir, 'train')
+    val_dir = os.path.join(args.output_dir, 'val')
+    test_dir = os.path.join(args.output_dir, 'test')
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(val_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
+
+    # Move images to respective directories
+    for img_name, _ in train_pairs:
+        src = os.path.join(args.output_dir, img_name)
+        dst = os.path.join(train_dir, img_name)
+        if os.path.exists(src):
+            os.rename(src, dst)
+
+    for img_name, _ in val_pairs:
+        src = os.path.join(args.output_dir, img_name)
+        dst = os.path.join(val_dir, img_name)
+        if os.path.exists(src):
+            os.rename(src, dst)
+
+    for img_name, _ in test_pairs:
+        src = os.path.join(args.output_dir, img_name)
+        dst = os.path.join(test_dir, img_name)
+        if os.path.exists(src):
+            os.rename(src, dst)
+
+    # Save metadata files
+    train_gt = os.path.join(args.output_dir, 'train_img_id_gt.txt')
+    with open(train_gt, 'w', encoding='utf-8') as f:
+        for img_name, text in train_pairs:
+            f.write(f"{img_name},{text}\n")
+
+    val_gt = os.path.join(args.output_dir, 'val_img_id_gt.txt')
+    with open(val_gt, 'w', encoding='utf-8') as f:
+        for img_name, text in val_pairs:
+            f.write(f"{img_name},{text}\n")
+
+    test_gt = os.path.join(args.output_dir, 'test_img_id_gt.txt')
+    with open(test_gt, 'w', encoding='utf-8') as f:
+        for img_name, text in test_pairs:
             f.write(f"{img_name},{text}\n")
 
     # Save character list
@@ -240,10 +290,14 @@ def main():
     print(f"\n{'='*60}")
     print(f"✓ Processed {len(dgrl_files)} files")
     print(f"✓ Extracted {total_lines} text lines")
+    print(f"✓ Train: {len(train_pairs)} | Val: {len(val_pairs)} | Test: {len(test_pairs)}")
     print(f"✓ Unique characters: {len(all_chars)}")
-    print(f"✓ Images saved to: {args.output_dir}")
-    print(f"✓ Metadata: {metadata_path}")
-    print(f"✓ Character list: {chars_path}")
+    print(f"✓ Output directory: {args.output_dir}")
+    print(f"✓ Metadata files:")
+    print(f"    - {train_gt}")
+    print(f"    - {val_gt}")
+    print(f"    - {test_gt}")
+    print(f"    - {chars_path}")
 
 
 if __name__ == '__main__':
