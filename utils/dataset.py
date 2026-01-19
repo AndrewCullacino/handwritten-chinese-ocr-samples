@@ -94,24 +94,19 @@ class NormalizePAD(object):
 
 
 class AlignCollate(object):
-    def __init__(self, imgH=48, PAD='ZerosPAD', max_width=1600):
+    def __init__(self, imgH=48, PAD='ZerosPAD', max_width=None):
         self.imgH = imgH
         self.PAD = PAD
-        self.max_width = max_width  # Maximum width to prevent OOM errors
+        self.max_width = max_width  # None = no truncation (recommended)
 
     def __call__(self, batch):
         batch = filter(lambda x: x is not None, batch)
         images, labels = zip(*batch)
 
-        maxW = 0
-        for image in images:
-            h, w, c = image.shape
-            if w > maxW:
-                maxW = w
+        maxW = max(img.shape[1] for img in images)
         
-        # Cap maximum width to prevent OOM errors on very long text lines
-        if maxW > self.max_width:
-            print(f"[Warning] Truncating batch width from {maxW} to {self.max_width}")
+        # Only truncate if max_width set (not recommended - loses text!)
+        if self.max_width and maxW > self.max_width:
             maxW = self.max_width
 
         if self.PAD == 'ZerosPAD':
@@ -124,11 +119,9 @@ class AlignCollate(object):
         padded_images = []
         for image in images:
             h, w, c = image.shape
-            # Truncate image if wider than max_width
             if w > maxW:
                 image = image[:, :maxW, :]
             padded_images.append(trans(image))
 
         image_tensors = torch.cat([t.unsqueeze(0) for t in padded_images], 0)
-
         return image_tensors, labels

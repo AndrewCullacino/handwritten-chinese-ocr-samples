@@ -270,11 +270,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
     #######################################################################
     # Data loading code
-    # max_width prevents OOM on very long text lines
-    # Conservative settings for A100 40GB with this large model
-    max_width = 1200  # Reduced from 1600 to prevent OOM
+    # No width truncation - use small batch size instead to handle variable widths
     
-    AlignCollate_train = AlignCollate(imgH=args.img_height, PAD=args.PAD, max_width=max_width)
+    AlignCollate_train = AlignCollate(imgH=args.img_height, PAD=args.PAD)
     train_dataset = ImageDataset(data_path=args.data,
                                  img_shape=(1, args.img_height),
                                  phase='train',
@@ -294,7 +292,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                                persistent_workers=args.workers > 0,
                                                prefetch_factor=4 if args.workers > 0 else None)
 
-    AlignCollate_val = AlignCollate(imgH=args.img_height, PAD=args.PAD, max_width=max_width)
+    AlignCollate_val = AlignCollate(imgH=args.img_height, PAD=args.PAD, )
     val_dataset = ImageDataset(data_path=args.data,
                                img_shape=(1, args.img_height),
                                phase='val',
@@ -308,7 +306,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                              persistent_workers=args.workers > 0,
                                              prefetch_factor=4 if args.workers > 0 else None)
 
-    AlignCollate_test = AlignCollate(imgH=args.img_height, PAD=args.PAD, max_width=max_width)
+    AlignCollate_test = AlignCollate(imgH=args.img_height, PAD=args.PAD, )
     test_dataset = ImageDataset(data_path=args.data,
                                 img_shape=(1, args.img_height),
                                 phase='test',
