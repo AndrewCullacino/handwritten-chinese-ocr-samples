@@ -270,9 +270,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
     #######################################################################
     # Data loading code
-    # max_width=1600 prevents OOM on very long text lines
-    # Adjust based on your GPU memory (A100 40GB: 1600, A100 80GB: 2000, V100: 1200)
-    max_width = 1600
+    # max_width prevents OOM on very long text lines
+    # Conservative settings for A100 40GB with this large model
+    max_width = 1200  # Reduced from 1600 to prevent OOM
     
     AlignCollate_train = AlignCollate(imgH=args.img_height, PAD=args.PAD, max_width=max_width)
     train_dataset = ImageDataset(data_path=args.data,
