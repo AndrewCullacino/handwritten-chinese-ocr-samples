@@ -30,6 +30,37 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 
+# A100 GPU Optimizations
+def setup_a100_optimizations():
+    """Enable A100-specific optimizations for maximum performance."""
+    if torch.cuda.is_available():
+        # Enable TF32 for A100 (significant speedup with minimal precision loss)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        
+        # Enable cuDNN benchmarking for optimal convolution algorithms
+        torch.backends.cudnn.benchmark = True
+        
+        # Get GPU info
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+        
+        print(f"\n{'='*60}")
+        print(f"GPU: {gpu_name}")
+        print(f"Memory: {gpu_memory:.1f} GB")
+        
+        if 'A100' in gpu_name:
+            print("✓ A100 detected - TF32 and optimizations enabled")
+            print("  - TF32 matmul: ON (8-19x faster than FP32)")
+            print("  - cuDNN benchmark: ON")
+            print("  - Mixed precision (AMP): ON")
+        elif 'V100' in gpu_name or 'T4' in gpu_name:
+            print(f"✓ {gpu_name.split()[0]} detected - optimizations enabled")
+        print(f"{'='*60}\n")
+        
+        return True
+    return False
+
 try:
     # from apex.parallel import DistributedDataParallel as DDP
     # from apex import amp
@@ -110,6 +141,9 @@ codec = None
 
 def main():
     args = build_argparser().parse_args()
+    
+    # Setup A100 optimizations
+    setup_a100_optimizations()
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -253,7 +287,9 @@ def main_worker(gpu, ngpus_per_node, args):
                                                num_workers=args.workers,
                                                collate_fn=AlignCollate_train,
                                                pin_memory=True,
-                                               sampler=train_sampler)
+                                               sampler=train_sampler,
+                                               persistent_workers=args.workers > 0,
+                                               prefetch_factor=4 if args.workers > 0 else None)
 
     AlignCollate_val = AlignCollate(imgH=args.img_height, PAD=args.PAD)
     val_dataset = ImageDataset(data_path=args.data,
@@ -265,7 +301,9 @@ def main_worker(gpu, ngpus_per_node, args):
                                              shuffle=False,
                                              num_workers=args.workers,
                                              collate_fn=AlignCollate_val,
-                                             pin_memory=True)
+                                             pin_memory=True,
+                                             persistent_workers=args.workers > 0,
+                                             prefetch_factor=4 if args.workers > 0 else None)
 
     AlignCollate_test = AlignCollate(imgH=args.img_height, PAD=args.PAD)
     test_dataset = ImageDataset(data_path=args.data,
@@ -277,7 +315,9 @@ def main_worker(gpu, ngpus_per_node, args):
                                               shuffle=False,
                                               num_workers=args.workers,
                                               collate_fn=AlignCollate_test,
-                                              pin_memory=True)
+                                              pin_memory=True,
+                                              persistent_workers=args.workers > 0,
+                                              prefetch_factor=4 if args.workers > 0 else None)
 
     #######################################################################
     # test

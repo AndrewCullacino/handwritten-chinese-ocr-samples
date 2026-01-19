@@ -18,7 +18,7 @@ import torch
 from utils.dataset import AlignCollate, ImageDataset, NormalizePAD
 from utils.ctc_codec import ctc_codec
 from models.handwritten_ctr_model import hctr_model
-from main import AverageMeter
+from main import AverageMeter, setup_a100_optimizations
 
 
 def build_argparser():
@@ -107,6 +107,9 @@ def build_argparser():
 
 
 def test(args):
+    # Setup A100 optimizations
+    setup_a100_optimizations()
+    
     if os.path.isfile(args.model_file) is False:
         raise FileNotFoundError(
             'No model file found at: {}'.format(args.model_file)
