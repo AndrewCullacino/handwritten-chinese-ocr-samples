@@ -25,6 +25,7 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
+from torch.cuda.amp import autocast, GradScaler
 import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
@@ -208,6 +209,10 @@ def main_worker(gpu, ngpus_per_node, args):
         # Initialize Amp. (Removed - apex not available)
         # model, optimizer = amp.initialize(model, optimizer, ...)
 
+        # Mixed Precision Training (AMP) - native PyTorch implementation
+        scaler = GradScaler()
+        print("INFO: Mixed precision training (AMP) enabled for 2-3x speedup on A100")
+
     #######################################################################
     # optionally resume from a checkpoint
     if args.resume:
@@ -290,7 +295,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         # train for one epoch
         val_acc = train(train_loader, val_loader, model,
-                        criterion, optimizer,
+                        criterion, optimizer, scaler,
                         epoch, args, val_acc)
 
         # evaluate on test set
@@ -310,7 +315,7 @@ def main_worker(gpu, ngpus_per_node, args):
         }, args, is_best, is_val=False)
 
 
-def train(train_loader, val_loader, model, criterion, optimizer,
+def train(train_loader, val_loader, model, criterion, optimizer, scaler,
           epoch, args, val_acc):
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -332,28 +337,32 @@ def train(train_loader, val_loader, model, criterion, optimizer,
             print(f'[Input Debug] Tensor shape: {input.shape}')  # (B, C, H, W)
         
         target_indexs, target_length = codec.encode(target)
-        preds = model(input) # preds: WBD (seq_len, batch, classes)
-        preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size).to(args.device)
-        
-        # Move target tensors to the same device as preds
-        target_indexs_tensor = torch.from_numpy(target_indexs).to(args.device)
-        target_length_tensor = torch.from_numpy(target_length).to(args.device)
-        
-        # Debug: Check CTC sequence length requirement
-        if i == 0:
-            seq_len = preds.size(0)
-            max_target = max(target_length)
-            print(f'[CTC Debug] Output seq_len: {seq_len}, Max target len: {max_target}')
-            if seq_len < max_target:
-                print(f'[CTC ERROR] seq_len ({seq_len}) < target_len ({max_target}) - Loss will be 0!')
-            else:
-                print(f'[CTC OK] seq_len >= target_len - Training should work!')
-        
-        # PyTorch CTCLoss requires log_softmax input (warpctc did this internally)
-        loss = criterion(preds.log_softmax(2),
-                         target_indexs_tensor,
-                         preds_sizes,
-                         target_length_tensor)
+
+        # Forward pass with mixed precision (AMP)
+        with autocast():
+            preds = model(input) # preds: WBD (seq_len, batch, classes)
+            preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size).to(args.device)
+
+            # Move target tensors to the same device as preds
+            target_indexs_tensor = torch.from_numpy(target_indexs).to(args.device)
+            target_length_tensor = torch.from_numpy(target_length).to(args.device)
+
+            # Debug: Check CTC sequence length requirement
+            if i == 0:
+                seq_len = preds.size(0)
+                max_target = max(target_length)
+                print(f'[CTC Debug] Output seq_len: {seq_len}, Max target len: {max_target}')
+                if seq_len < max_target:
+                    print(f'[CTC ERROR] seq_len ({seq_len}) < target_len ({max_target}) - Loss will be 0!')
+                else:
+                    print(f'[CTC OK] seq_len >= target_len - Training should work!')
+
+            # PyTorch CTCLoss requires log_softmax input (warpctc did this internally)
+            # Note: CTC loss is automatically computed in FP32 for numerical stability
+            loss = criterion(preds.log_softmax(2),
+                           target_indexs_tensor,
+                           preds_sizes,
+                           target_length_tensor)
 
         # Check for zero loss (CTC failure)
         if loss.item() == 0.0 and i == 0:
@@ -365,11 +374,11 @@ def train(train_loader, val_loader, model, criterion, optimizer,
         losses.update(loss.item(), input.size(0))
 
         # compute gradient and do optimization step
+        # Backward pass with gradient scaling
         optimizer.zero_grad()
-        loss.backward()
-        # with amp.scale_loss(loss, optimizer) as scaled_loss:
-        #     scaled_loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
