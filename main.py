@@ -341,7 +341,10 @@ def train(train_loader, val_loader, model, criterion, optimizer, scaler,
         # Forward pass with mixed precision (AMP)
         with autocast():
             preds = model(input) # preds: WBD (seq_len, batch, classes)
-            preds_sizes = torch.IntTensor([preds.size(0)] * args.batch_size).to(args.device)
+
+            # FIX: Use actual batch size (last batch might be smaller)
+            actual_batch_size = input.size(0)
+            preds_sizes = torch.IntTensor([preds.size(0)] * actual_batch_size).to(args.device)
 
             # Move target tensors to the same device as preds
             target_indexs_tensor = torch.from_numpy(target_indexs).to(args.device)
@@ -364,19 +367,32 @@ def train(train_loader, val_loader, model, criterion, optimizer, scaler,
                            preds_sizes,
                            target_length_tensor)
 
+        # Check for inf/nan loss (gradient explosion or numerical instability)
+        if not torch.isfinite(loss):
+            print(f'[WARNING] Batch {i}: Loss is inf/nan, skipping this batch')
+            print(f'  This usually indicates gradient explosion or CTC numerical issues')
+            continue  # Skip this batch, don't update weights
+
         # Check for zero loss (CTC failure)
         if loss.item() == 0.0 and i == 0:
             print(f'[CTC ERROR] Loss is 0.0 - CTC alignment failed!')
 
-        # TODO: how about inf loss ?
-        if math.isnan(loss.item()):
-            raise ValueError('Stop at NaN loss.')
         losses.update(loss.item(), input.size(0))
 
         # compute gradient and do optimization step
         # Backward pass with gradient scaling
         optimizer.zero_grad()
         scaler.scale(loss).backward()
+
+        # CRITICAL: Gradient clipping to prevent explosion in RNN layers
+        # Unscale gradients before clipping (required for AMP)
+        scaler.unscale_(optimizer)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+
+        # Log gradient norm for monitoring (first batch only)
+        if i == 0:
+            print(f'[Gradient Debug] Gradient norm: {grad_norm:.4f} (clipped at 5.0)')
+
         scaler.step(optimizer)
         scaler.update()
 
