@@ -45,15 +45,27 @@ python main.py -m hctr -d data/hwdb2.x -b 8 -pf 100 -lr 1e-4 --gpu 0
 - 训练前请确保图片已按高 128 等比缩放（预处理脚本会处理）。
 
 ## 测试与解码
-```
-python test.py -m hctr -f <checkpoint> \
-              -i data/hwdb2.x \
-              -dm [greedy-search|beam-search] \
-              --use-tfm-pred --transformer-path <tfm>   # 提升精度
-```
-- `greedy-search`：默认，速度快。
-- `beam-search`：可叠加 n-gram / transformer 语言模型以提升精度。
 
+**单张图片推理：**
+```bash
+python test.py -m hctr -f <checkpoint> -i <image.png> -dm greedy-search
+```
+
+**测试集评估（训练后）：**
+```bash
+python test.py -m hctr -f <checkpoint> \
+    -i data/hwdb2.x \
+    -bm \
+    -dm greedy-search \
+    -b 16 -pf 20
+```
+- `-bm`：基准测试模式，输入需为数据集目录
+- `-dm greedy-search`：默认解码，速度快
+- `-dm beam-search`：可叠加语言模型提升精度：
+  ```bash
+  -dm beam-search --use-tfm-pred --transformer-path <tfm>   # transformer LM
+  -dm beam-search --skip-search --kenlm-path <ngram.arpa>   # n-gram LM（低延迟）
+  ```
 ## 部署（可选，OpenVINO）
 1) 导出 ONNX：`python utils/export_onnx.py`。
 2) 转换为 IR：使用 OpenVINO Model Optimizer。
