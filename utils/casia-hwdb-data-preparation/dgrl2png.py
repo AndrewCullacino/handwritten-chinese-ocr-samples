@@ -39,8 +39,6 @@ Usage:
     
     # Process a zip file containing DGRL files
     python dgrl2png.py /path/to/HWDB2.0Train.zip ./extracted_data
-
-Created by following patterns from gnt2png.py
 '''
 
 import numpy as np
